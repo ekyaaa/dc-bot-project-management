@@ -1,0 +1,83 @@
+# ==============================================================================
+# Docker Compose Specification for Discord Project Management Bot
+# Specification: Compose Spec (v2)
+# ==============================================================================
+
+services:
+  bot:
+    container_name: dc-bot
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+    image: dc-bot:latest
+    restart: unless-stopped
+
+    # Process signal handling & graceful teardown (WAL checkpoint flush)
+    stop_signal: SIGTERM
+    stop_grace_period: 30s
+
+    # Port mapping (Host PORT or default 3000 -> Container 3000)
+    ports:
+      - "${PORT:-3000}:3000"
+
+    # Runtime configuration from .env
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      DATABASE_PATH: /data/bot.db
+      GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github_app_private_key
+      TOKEN_ENCRYPTION_KEY_FILE: /run/secrets/token_encryption_key
+
+    # Persistent storage for SQLite database (WAL, SHM, backups)
+    volumes:
+      - bot-data:/data
+
+    # Secrets mounted in tmpfs (/run/secrets/*)
+    secrets:
+      - github_app_private_key
+      - token_encryption_key
+
+    # Resource constraints to maintain VPS stability
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
+    # Logging rotation to prevent unbounded disk usage
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Liveness healthcheck polling container internal port
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/health/live').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    # Security hardening
+    security_opt:
+      - no-new-privileges:true
+
+# Named persistent volumes
+volumes:
+  bot-data:
+    name: dc-bot-data
+
+# Secrets definition (mapped to untracked host files)
+secrets:
+  github_app_private_key:
+    file: ./secrets/github-app-private-key.pem
+  token_encryption_key:
+    file: ./secrets/token-encryption-key.txt
