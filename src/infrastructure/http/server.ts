@@ -4,6 +4,7 @@ import type { ICryptoService } from '../../application/ports/ICryptoService.js';
 import type { HandleOAuthCallbackUseCase } from '../../application/usecases/HandleOAuthCallbackUseCase.js';
 import { registerAuthRoutes, type AuthRouteOptions } from './routes/auth.js';
 import { registerWebhookRoutes, type WebhookRouteOptions } from './routes/webhooks.js';
+import { registerAdminRoutes, type AdminRouteOptions } from './routes/admin.js';
 
 export interface IDatabaseHealthCheck {
   healthCheck?(): boolean;
@@ -23,6 +24,7 @@ export interface HttpServerOptions {
   authRouteOptions?: AuthRouteOptions;
   handleOAuthCallbackUseCase?: HandleOAuthCallbackUseCase;
   webhookRouteOptions?: WebhookRouteOptions;
+  adminRouteOptions?: AdminRouteOptions;
 }
 
 export async function createHttpServer(options: HttpServerOptions = {}): Promise<FastifyInstance> {
@@ -111,6 +113,14 @@ export async function createHttpServer(options: HttpServerOptions = {}): Promise
   // Register Webhook Routes if configured
   if (options.webhookRouteOptions) {
     registerWebhookRoutes(app, options.webhookRouteOptions);
+  }
+
+  // Register Admin Dashboard & Management Routes if configured
+  if (options.adminRouteOptions) {
+    registerAdminRoutes(app, options.adminRouteOptions);
+    app.get('/', async (_request, reply) => {
+      return reply.redirect('/admin');
+    });
   }
 
   return app;

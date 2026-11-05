@@ -1,5 +1,6 @@
 import type { Config } from '../../config/env.js';
 import type { IIdentityRepository, IAuditRepository } from '../ports/IRepositories.js';
+import type { ProjectRepository } from '../../infrastructure/persistence/repositories/ProjectRepository.js';
 import { UnauthorizedError } from '../../domain/errors.js';
 
 export interface DisconnectAccountInput {
@@ -20,10 +21,14 @@ export class DisconnectAccountUseCase {
     private readonly identityRepository: IIdentityRepository,
     private readonly auditRepository: IAuditRepository,
     private readonly config: Pick<Config, 'DISCORD_GUILD_ID'>,
+    private readonly projectRepository?: ProjectRepository,
   ) {}
 
   public async execute(input: DisconnectAccountInput): Promise<DisconnectAccountResult> {
-    if (input.guildId !== this.config.DISCORD_GUILD_ID) {
+    const isAllowed = input.guildId === this.config.DISCORD_GUILD_ID ||
+      (this.projectRepository && this.projectRepository.getProjectsForGuild(input.guildId).length > 0);
+
+    if (!isAllowed) {
       throw new UnauthorizedError('Command is not permitted in this Discord server.');
     }
 

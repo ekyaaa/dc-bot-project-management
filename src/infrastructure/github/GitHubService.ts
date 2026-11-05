@@ -53,6 +53,7 @@ export interface GitHubServiceDependencies {
 
 export class GitHubService implements IGitHubService {
   private readonly octokit: CustomOctokitInstance;
+  private readonly gitHubAppAuth?: GitHubAppAuth;
   private readonly owner: string;
   private readonly repo: string;
   private readonly projectNumber: number;
@@ -64,6 +65,7 @@ export class GitHubService implements IGitHubService {
     this.owner = deps.config.GITHUB_OWNER;
     this.repo = deps.config.GITHUB_REPOSITORY;
     this.projectNumber = deps.config.GITHUB_PROJECT_NUMBER;
+    this.gitHubAppAuth = deps.gitHubAppAuth;
 
     if (deps.octokit) {
       this.octokit = deps.octokit;
@@ -72,6 +74,13 @@ export class GitHubService implements IGitHubService {
     } else {
       throw new Error('GitHubService requires either gitHubAppAuth or octokit instance');
     }
+  }
+
+  private async getOctokit(): Promise<CustomOctokitInstance> {
+    if (this.gitHubAppAuth) {
+      return this.gitHubAppAuth.getOctokitForRepo(this.owner, this.repo);
+    }
+    return this.octokit;
   }
 
   // ==========================================
@@ -87,10 +96,12 @@ export class GitHubService implements IGitHubService {
     }
 
     try {
+      const client = await this.getOctokit();
+
       // 1. Try Organization-level Project v2 first
       let projectData: any = null;
       try {
-        const orgRes: any = await this.octokit.graphql(GET_ORG_PROJECT_V2_METADATA, {
+        const orgRes: any = await client.graphql(GET_ORG_PROJECT_V2_METADATA, {
           owner: this.owner,
           number: this.projectNumber,
         });
@@ -103,7 +114,7 @@ export class GitHubService implements IGitHubService {
       // 2. If organization returned null, try User-level Project v2
       if (!projectData) {
         try {
-          const userRes: any = await this.octokit.graphql(GET_USER_PROJECT_V2_METADATA, {
+          const userRes: any = await client.graphql(GET_USER_PROJECT_V2_METADATA, {
             owner: this.owner,
             number: this.projectNumber,
           });
@@ -164,7 +175,8 @@ export class GitHubService implements IGitHubService {
 
   public async listIssues(filter: IssueFilter): Promise<IssueSummary[]> {
     try {
-      const res = await this.octokit.rest.issues.listForRepo({
+      const client = await this.getOctokit();
+      const res = await client.rest.issues.listForRepo({
         owner: this.owner,
         repo: this.repo,
         state: 'open',
@@ -188,7 +200,7 @@ export class GitHubService implements IGitHubService {
       let projectItemsMap: Map<number, { status?: CanonicalStatus; priority?: CanonicalPriority }> | null = null;
       try {
         const metadata = await this.getProjectMetadata();
-        const itemsRes: any = await this.octokit.graphql(GET_PROJECT_V2_ITEMS, {
+        const itemsRes: any = await client.graphql(GET_PROJECT_V2_ITEMS, {
           projectId: metadata.projectId,
         });
 
@@ -257,7 +269,8 @@ export class GitHubService implements IGitHubService {
 
   public async getIssue(issueNumber: number): Promise<IssueDetail> {
     try {
-      const res: any = await this.octokit.graphql(GET_ISSUE_PROJECT_ITEM, {
+      const client = await this.getOctokit();
+      const res: any = await client.graphql(GET_ISSUE_PROJECT_ITEM, {
         owner: this.owner,
         repo: this.repo,
         issueNumber,
@@ -330,7 +343,8 @@ export class GitHubService implements IGitHubService {
 
   public async listMyIssues(githubUserId: number): Promise<IssueSummary[]> {
     try {
-      const res = await this.octokit.rest.issues.listForRepo({
+      const client = await this.getOctokit();
+      const res = await client.rest.issues.listForRepo({
         owner: this.owner,
         repo: this.repo,
         state: 'open',
@@ -363,8 +377,9 @@ export class GitHubService implements IGitHubService {
 
   public async getProjectSummary(): Promise<ProjectSummary> {
     try {
+      const client = await this.getOctokit();
       const metadata = await this.getProjectMetadata();
-      const res: any = await this.octokit.graphql(GET_PROJECT_V2_ITEMS, {
+      const res: any = await client.graphql(GET_PROJECT_V2_ITEMS, {
         projectId: metadata.projectId,
       });
 
@@ -419,7 +434,8 @@ export class GitHubService implements IGitHubService {
 
   public async listReviewRequests(githubUserId?: number): Promise<ReviewRequestSummary[]> {
     try {
-      const res = await this.octokit.rest.pulls.list({
+      const client = await this.getOctokit();
+      const res = await client.rest.pulls.list({
         owner: this.owner,
         repo: this.repo,
         state: 'open',
@@ -478,7 +494,8 @@ export class GitHubService implements IGitHubService {
 
   public async listUnassignedIssues(): Promise<IssueSummary[]> {
     try {
-      const res = await this.octokit.rest.issues.listForRepo({
+      const client = await this.getOctokit();
+      const res = await client.rest.issues.listForRepo({
         owner: this.owner,
         repo: this.repo,
         state: 'open',
@@ -515,8 +532,9 @@ export class GitHubService implements IGitHubService {
 
   public async createIssue(input: CreateIssueInput): Promise<IssueDetail> {
     try {
+      const client = await this.getOctokit();
       const labels = input.type ? [input.type] : [];
-      const res = await this.octokit.rest.issues.create({
+      const res = await client.rest.issues.create({
         owner: this.owner,
         repo: this.repo,
         title: input.title,
@@ -530,7 +548,7 @@ export class GitHubService implements IGitHubService {
       // Link to Project v2
       try {
         const metadata = await this.getProjectMetadata();
-        await this.octokit.graphql(ADD_PROJECT_V2_ITEM_BY_ID, {
+        await client.graphql(ADD_PROJECT_V2_ITEM_BY_ID, {
           projectId: metadata.projectId,
           contentId,
         });
@@ -538,7 +556,24 @@ export class GitHubService implements IGitHubService {
         // Project linking failure should not prevent issue return
       }
 
-      return this.getIssue(issueNumber);
+      try {
+        return await this.getIssue(issueNumber);
+      } catch {
+        // Fallback for immediate eventual consistency if GraphQL replica lags behind REST create
+        return {
+          number: issueNumber,
+          title: res.data.title,
+          htmlUrl: res.data.html_url,
+          state: 'OPEN',
+          assignees: res.data.assignees?.map((a: any) => a.login) ?? [],
+          author: res.data.user?.login ?? 'ghost',
+          labels,
+          commentsCount: 0,
+          updatedAt: res.data.updated_at,
+          createdAt: res.data.created_at,
+          body: res.data.body ?? '',
+        };
+      }
     } catch (err) {
       throw mapGitHubError(err, 'createIssue');
     }
@@ -550,7 +585,8 @@ export class GitHubService implements IGitHubService {
     _actorGithubUserId: number,
   ): Promise<void> {
     try {
-      await this.octokit.rest.issues.addAssignees({
+      const client = await this.getOctokit();
+      await client.rest.issues.addAssignees({
         owner: this.owner,
         repo: this.repo,
         issue_number: issueNumber,
@@ -596,7 +632,8 @@ export class GitHubService implements IGitHubService {
         );
       }
 
-      await this.octokit.graphql(UPDATE_PROJECT_V2_ITEM_FIELD_VALUE, {
+      const client = await this.getOctokit();
+      await client.graphql(UPDATE_PROJECT_V2_ITEM_FIELD_VALUE, {
         projectId: metadata.projectId,
         itemId: issue.projectItemId,
         fieldId: metadata.statusFieldId,
@@ -639,7 +676,8 @@ export class GitHubService implements IGitHubService {
         );
       }
 
-      await this.octokit.graphql(UPDATE_PROJECT_V2_ITEM_FIELD_VALUE, {
+      const client = await this.getOctokit();
+      await client.graphql(UPDATE_PROJECT_V2_ITEM_FIELD_VALUE, {
         projectId: metadata.projectId,
         itemId: issue.projectItemId,
         fieldId: metadata.priorityFieldId,
@@ -682,7 +720,8 @@ export class GitHubService implements IGitHubService {
     _actorGithubUserId: number,
   ): Promise<void> {
     try {
-      await this.octokit.rest.issues.createComment({
+      const client = await this.getOctokit();
+      await client.rest.issues.createComment({
         owner: this.owner,
         repo: this.repo,
         issue_number: issueNumber,
@@ -699,7 +738,8 @@ export class GitHubService implements IGitHubService {
 
   public async getUserRepoPermission(githubUsername: string): Promise<RepoPermissionLevel> {
     try {
-      const res = await this.octokit.rest.repos.getCollaboratorPermissionLevel({
+      const client = await this.getOctokit();
+      const res = await client.rest.repos.getCollaboratorPermissionLevel({
         owner: this.owner,
         repo: this.repo,
         username: githubUsername,

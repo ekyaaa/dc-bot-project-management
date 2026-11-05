@@ -7,6 +7,7 @@ import type {
   ConfirmationAction,
   RepoPermissionLevel,
 } from '../../domain/types.js';
+import type { IGitHubService } from './IGitHubService.js';
 
 export interface AuthorizationDecision {
   allowed: boolean;
@@ -23,6 +24,7 @@ export interface IAuthorizationService {
     discordUserId: string,
     guildId: string,
     channelId?: string,
+    overrideGitHubService?: IGitHubService,
   ): Promise<Principal>;
 
   /**

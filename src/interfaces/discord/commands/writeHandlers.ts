@@ -36,6 +36,7 @@ export interface WriteHandlerDeps {
   gitHubService: IGitHubService;
   auditService: AuditService;
   confirmationStore: ConfirmationStore;
+  projectId?: string;
 }
 
 function buildConfirmationButtons(
@@ -64,12 +65,17 @@ function buildConfirmationButtons(
  */
 export async function handleIssueCreateInitiate(
   interaction: ChatInputCommandInteraction,
+  projectId?: string,
 ): Promise<void> {
   const selectedType = interaction.options.getString('type') ?? 'task';
   const prefillTitle = interaction.options.getString('title') ?? '';
 
+  const customId = projectId
+    ? `modal:issue_create:${selectedType}:${projectId}`
+    : `modal:issue_create:${selectedType}`;
+
   const modal = new ModalBuilder()
-    .setCustomId(`modal:issue_create:${selectedType}`)
+    .setCustomId(customId)
     .setTitle('Buat Issue GitHub Baru');
 
   const titleInput = new TextInputBuilder()
@@ -119,6 +125,8 @@ export async function handleIssueCreateModalSubmit(
   const principal = await deps.authService.resolvePrincipal(
     interaction.user.id,
     interaction.guildId ?? '',
+    interaction.channelId ?? undefined,
+    deps.gitHubService,
   );
   const verifiedPrincipal = await deps.authService.assertAuthorizedWrite(principal, 'create_issue');
 
@@ -189,6 +197,8 @@ export async function handleIssueAssignCommand(
   const principal = await deps.authService.resolvePrincipal(
     interaction.user.id,
     interaction.guildId ?? '',
+    interaction.channelId ?? undefined,
+    deps.gitHubService,
   );
   const verifiedPrincipal = await deps.authService.assertAuthorizedWrite(principal, 'assign_issue', {
     targetAssigneeGithubLogin: developer,
@@ -224,6 +234,7 @@ export async function handleIssueAssignCommand(
     callerDiscordId: interaction.user.id,
     timestamp,
     expiresAt: timestamp + ConfirmationStore.TTL_MS,
+    projectId: deps.projectId,
     payload: {
       targetAssignee: developer,
       expectedPreviousAssignees: [...issue.assignees],
@@ -267,6 +278,8 @@ export async function handleIssueStatusCommand(
   const principal = await deps.authService.resolvePrincipal(
     interaction.user.id,
     interaction.guildId ?? '',
+    interaction.channelId ?? undefined,
+    deps.gitHubService,
   );
 
   const issue = await deps.gitHubService.getIssue(issueNumber);
@@ -286,6 +299,7 @@ export async function handleIssueStatusCommand(
     callerDiscordId: interaction.user.id,
     timestamp,
     expiresAt: timestamp + ConfirmationStore.TTL_MS,
+    projectId: deps.projectId,
     payload: {
       targetStatus,
       expectedPreviousStatus: currentStatus,
@@ -328,6 +342,8 @@ export async function handleIssuePriorityCommand(
   const principal = await deps.authService.resolvePrincipal(
     interaction.user.id,
     interaction.guildId ?? '',
+    interaction.channelId ?? undefined,
+    deps.gitHubService,
   );
 
   const issue = await deps.gitHubService.getIssue(issueNumber);
@@ -351,6 +367,7 @@ export async function handleIssuePriorityCommand(
     callerDiscordId: interaction.user.id,
     timestamp,
     expiresAt: timestamp + ConfirmationStore.TTL_MS,
+    projectId: deps.projectId,
     payload: {
       targetPriority,
       expectedPreviousPriority: currentPriority,
@@ -399,6 +416,8 @@ export async function handleIssueBlockCommand(
   const principal = await deps.authService.resolvePrincipal(
     interaction.user.id,
     interaction.guildId ?? '',
+    interaction.channelId ?? undefined,
+    deps.gitHubService,
   );
 
   const issue = await deps.gitHubService.getIssue(issueNumber);
@@ -418,6 +437,7 @@ export async function handleIssueBlockCommand(
     callerDiscordId: interaction.user.id,
     timestamp,
     expiresAt: timestamp + ConfirmationStore.TTL_MS,
+    projectId: deps.projectId,
     payload: {
       targetStatus: 'Blocked',
       expectedPreviousStatus: currentStatus,
@@ -469,6 +489,8 @@ export async function handleIssueCommentCommand(
   const principal = await deps.authService.resolvePrincipal(
     interaction.user.id,
     interaction.guildId ?? '',
+    interaction.channelId ?? undefined,
+    deps.gitHubService,
   );
   const verifiedPrincipal = await deps.authService.assertAuthorizedWrite(principal, 'add_comment');
 

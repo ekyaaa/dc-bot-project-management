@@ -12,6 +12,7 @@ import {
   buildIssueDetailEmbed,
 } from '../embeds.js';
 import { PaginationManager } from '../pagination.js';
+import { UnauthorizedError } from '../../../domain/errors.js';
 
 export interface QueryHandlerDeps {
   gitHubService: IGitHubService;
@@ -31,13 +32,14 @@ export async function handleProjectQueryCommand(
   const principal = await deps.authService.resolvePrincipal(
     interaction.user.id,
     interaction.guildId ?? '',
-    interaction.channelId,
+    interaction.channelId ?? undefined,
+    deps.gitHubService,
   );
 
   switch (subcommand) {
     case 'status': {
       const decision = deps.authService.authorizeRead(principal, 'view_status');
-      if (!decision.allowed) throw new Error(decision.reason ?? 'Read unauthorized');
+      if (!decision.allowed) throw new UnauthorizedError(decision.reason ?? 'Read unauthorized');
 
       const summary = await deps.gitHubService.getProjectSummary();
       const embed = buildProjectStatusEmbed(summary);
@@ -47,7 +49,7 @@ export async function handleProjectQueryCommand(
 
     case 'issues': {
       const decision = deps.authService.authorizeRead(principal, 'list_issues');
-      if (!decision.allowed) throw new Error(decision.reason ?? 'Read unauthorized');
+      if (!decision.allowed) throw new UnauthorizedError(decision.reason ?? 'Read unauthorized');
 
       const status = interaction.options.getString('status') ?? undefined;
       const assignee = interaction.options.getString('assignee') ?? undefined;
@@ -98,7 +100,7 @@ export async function handleProjectQueryCommand(
 
     case 'blocked': {
       const decision = deps.authService.authorizeRead(principal, 'view_blocked');
-      if (!decision.allowed) throw new Error(decision.reason ?? 'Read unauthorized');
+      if (!decision.allowed) throw new UnauthorizedError(decision.reason ?? 'Read unauthorized');
 
       const blocked = await deps.gitHubService.listBlockedIssues();
 
@@ -126,7 +128,7 @@ export async function handleProjectQueryCommand(
 
     case 'unassigned': {
       const decision = deps.authService.authorizeRead(principal, 'view_unassigned');
-      if (!decision.allowed) throw new Error(decision.reason ?? 'Read unauthorized');
+      if (!decision.allowed) throw new UnauthorizedError(decision.reason ?? 'Read unauthorized');
 
       const unassigned = await deps.gitHubService.listUnassignedIssues();
 
@@ -171,7 +173,7 @@ export async function handleProjectQueryCommand(
 
     case 'reviews': {
       const decision = deps.authService.authorizeRead(principal, 'view_reviews');
-      if (!decision.allowed) throw new Error(decision.reason ?? 'Read unauthorized');
+      if (!decision.allowed) throw new UnauthorizedError(decision.reason ?? 'Read unauthorized');
 
       const reviews = await deps.gitHubService.listReviewRequests();
 
@@ -199,7 +201,7 @@ export async function handleProjectQueryCommand(
 
     case 'digest': {
       const decision = deps.authService.authorizeRead(principal, 'view_digest');
-      if (!decision.allowed) throw new Error(decision.reason ?? 'Read unauthorized');
+      if (!decision.allowed) throw new UnauthorizedError(decision.reason ?? 'Read unauthorized');
 
       const [summary, blocked, reviews] = await Promise.all([
         deps.gitHubService.getProjectSummary(),
@@ -228,11 +230,12 @@ export async function handleIssueViewCommand(
   const principal = await deps.authService.resolvePrincipal(
     interaction.user.id,
     interaction.guildId ?? '',
-    interaction.channelId,
+    interaction.channelId ?? undefined,
+    deps.gitHubService,
   );
 
   const decision = deps.authService.authorizeRead(principal, 'view_issue');
-  if (!decision.allowed) throw new Error(decision.reason ?? 'Read unauthorized');
+  if (!decision.allowed) throw new UnauthorizedError(decision.reason ?? 'Read unauthorized');
 
   const issueDetail = await deps.gitHubService.getIssue(issueNumber);
   const { embed, components } = buildIssueDetailEmbed(issueDetail);

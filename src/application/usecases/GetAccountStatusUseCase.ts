@@ -1,5 +1,6 @@
 import type { Config } from '../../config/env.js';
 import type { IIdentityRepository } from '../ports/IRepositories.js';
+import type { ProjectRepository } from '../../infrastructure/persistence/repositories/ProjectRepository.js';
 import type { ApplicationRole } from '../../domain/types.js';
 import { UnauthorizedError } from '../../domain/errors.js';
 
@@ -22,10 +23,14 @@ export class GetAccountStatusUseCase {
   constructor(
     private readonly identityRepository: IIdentityRepository,
     private readonly config: Pick<Config, 'DISCORD_GUILD_ID'>,
+    private readonly projectRepository?: ProjectRepository,
   ) {}
 
   public async execute(input: GetAccountStatusInput): Promise<AccountStatusResult> {
-    if (input.guildId !== this.config.DISCORD_GUILD_ID) {
+    const isAllowed = input.guildId === this.config.DISCORD_GUILD_ID ||
+      (this.projectRepository && this.projectRepository.getProjectsForGuild(input.guildId).length > 0);
+
+    if (!isAllowed) {
       throw new UnauthorizedError('Command is not permitted in this Discord server.');
     }
 

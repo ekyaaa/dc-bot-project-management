@@ -7,7 +7,9 @@ import {
 } from 'discord.js';
 import type { Config } from '../../config/env.js';
 import type { IGitHubService } from '../../application/ports/IGitHubService.js';
+import type { GitHubServiceFactory } from '../../infrastructure/github/GitHubServiceFactory.js';
 import type { IAuthorizationService } from '../../application/ports/IAuthorizationService.js';
+import type { ProjectRepository, ProjectRecord } from '../../infrastructure/persistence/repositories/ProjectRepository.js';
 import type { AuditService } from '../../application/services/AuditService.js';
 import type {
   InitiateAccountLinkUseCase,
@@ -36,8 +38,10 @@ import { handleAccountCommand } from './commands/accountHandlers.js';
 export interface InteractionRouterDependencies {
   config: Pick<Config, 'DISCORD_GUILD_ID' | 'DISCORD_APPLICATION_ID' | 'BOT_WRITE_ACTIONS_ENABLED'>;
   gitHubService: IGitHubService;
+  gitHubServiceFactory?: GitHubServiceFactory;
   authService: IAuthorizationService;
   auditService: AuditService;
+  projectRepository?: ProjectRepository;
   confirmationStore?: ConfirmationStore;
   paginationManager?: PaginationManager;
   accountUseCases: {
@@ -62,8 +66,10 @@ export class InteractionRouter {
     'DISCORD_GUILD_ID' | 'DISCORD_APPLICATION_ID' | 'BOT_WRITE_ACTIONS_ENABLED'
   >;
   private readonly gitHubService: IGitHubService;
+  private readonly gitHubServiceFactory?: GitHubServiceFactory;
   private readonly authService: IAuthorizationService;
   private readonly auditService: AuditService;
+  private readonly projectRepository?: ProjectRepository;
   private readonly confirmationStore: ConfirmationStore;
   private readonly paginationManager: PaginationManager;
   private readonly accountUseCases: {
@@ -75,8 +81,10 @@ export class InteractionRouter {
   constructor(deps: InteractionRouterDependencies) {
     this.config = deps.config;
     this.gitHubService = deps.gitHubService;
+    this.gitHubServiceFactory = deps.gitHubServiceFactory;
     this.authService = deps.authService;
     this.auditService = deps.auditService;
+    this.projectRepository = deps.projectRepository;
     this.confirmationStore = deps.confirmationStore ?? ConfirmationStore.getInstance();
     this.paginationManager = deps.paginationManager ?? PaginationManager.getInstance();
     this.accountUseCases = deps.accountUseCases;
@@ -87,10 +95,14 @@ export class InteractionRouter {
    */
   public async handleInteraction(interaction: Interaction): Promise<void> {
     // 1. Fail-closed Guild Allowlist Enforcement
-    if (!interaction.inGuild() || interaction.guildId !== this.config.DISCORD_GUILD_ID) {
+    const isAuthorized = this.projectRepository
+      ? (this.projectRepository.getProjectsForGuild(interaction.guildId || '').length > 0 || interaction.guildId === this.config.DISCORD_GUILD_ID)
+      : (interaction.guildId === this.config.DISCORD_GUILD_ID);
+
+    if (!interaction.inGuild() || !isAuthorized) {
       if (interaction.isRepliable()) {
         await interaction.reply({
-          content: '⛔ Perintah ini hanya dapat dijalankan di server Discord resmi yang diizinkan (Unauthorized Guild).',
+          content: '⛔ Server ini belum memiliki izin akses ke proyek GitHub manapun (Unauthorized Guild). Silakan tautkan di Web Dashboard Admin.',
           ephemeral: true,
         });
       }
@@ -152,17 +164,21 @@ export class InteractionRouter {
     }
 
     // 4. Dispatch to Specific Command Handlers
+    const resolvedProject = this.resolveProjectForInteraction(interaction);
+    const activeGitHubService = this.getGitHubService(resolvedProject);
+
     const queryDeps = {
-      gitHubService: this.gitHubService,
+      gitHubService: activeGitHubService,
       authService: this.authService,
       paginationManager: this.paginationManager,
     };
 
     const writeDeps = {
       authService: this.authService,
-      gitHubService: this.gitHubService,
+      gitHubService: activeGitHubService,
       auditService: this.auditService,
       confirmationStore: this.confirmationStore,
+      projectId: resolvedProject?.id,
     };
 
     switch (commandName) {
@@ -177,7 +193,7 @@ export class InteractionRouter {
             await handleIssueViewCommand(interaction, queryDeps);
             break;
           case 'create':
-            await handleIssueCreateInitiate(interaction);
+            await handleIssueCreateInitiate(interaction, resolvedProject?.id);
             break;
           case 'assign':
             await handleIssueAssignCommand(interaction, writeDeps);
@@ -230,11 +246,34 @@ export class InteractionRouter {
     }
 
     // 2. Try confirmation button handler
+    let activeGitHubService = this.gitHubService;
+    let resolvedProjectId: string | undefined;
+
+    const parts = interaction.customId.split(':');
+    if (parts.length >= 5 && (parts[0] === 'confirm' || parts[0] === 'cancel')) {
+      const sessionKey = `${parts[1]}:${parts[2]}:${parts[3]}:${parts[4]}`;
+      const session = this.confirmationStore.get(sessionKey);
+      if (session?.projectId && this.projectRepository) {
+        resolvedProjectId = session.projectId;
+        const project = this.projectRepository.getProjectById(session.projectId);
+        activeGitHubService = this.getGitHubService(project);
+      } else {
+        const resolvedProject = this.resolveProjectForInteraction(interaction);
+        resolvedProjectId = resolvedProject?.id;
+        activeGitHubService = this.getGitHubService(resolvedProject);
+      }
+    } else {
+      const resolvedProject = this.resolveProjectForInteraction(interaction);
+      resolvedProjectId = resolvedProject?.id;
+      activeGitHubService = this.getGitHubService(resolvedProject);
+    }
+
     const writeDeps = {
       authService: this.authService,
-      gitHubService: this.gitHubService,
+      gitHubService: activeGitHubService,
       auditService: this.auditService,
       confirmationStore: this.confirmationStore,
+      projectId: resolvedProjectId,
     };
 
     const handledByConfirmation = await handleConfirmationInteraction(interaction, writeDeps);
@@ -258,11 +297,26 @@ export class InteractionRouter {
     // Defer reply immediately within 3s
     await interaction.deferReply({ ephemeral: false });
 
+    let activeGitHubService = this.gitHubService;
+    let resolvedProjectId: string | undefined;
+
+    const modalParts = interaction.customId.split(':');
+    if (modalParts.length >= 4 && modalParts[3] && modalParts[3] !== 'default' && this.projectRepository) {
+      resolvedProjectId = modalParts[3];
+      const project = this.projectRepository.getProjectById(modalParts[3]);
+      activeGitHubService = this.getGitHubService(project);
+    } else {
+      const resolvedProject = this.resolveProjectForInteraction(interaction);
+      resolvedProjectId = resolvedProject?.id;
+      activeGitHubService = this.getGitHubService(resolvedProject);
+    }
+
     const writeDeps = {
       authService: this.authService,
-      gitHubService: this.gitHubService,
+      gitHubService: activeGitHubService,
       auditService: this.auditService,
       confirmationStore: this.confirmationStore,
+      projectId: resolvedProjectId,
     };
 
     if (interaction.customId.startsWith('modal:issue_create')) {
@@ -271,6 +325,52 @@ export class InteractionRouter {
     }
 
     throw new Error(`Modal submission '${interaction.customId}' tidak dikenali.`);
+  }
+
+  /**
+   * Resolves the target ProjectRecord for an interaction.
+   */
+  public resolveProjectForInteraction(interaction: Interaction): ProjectRecord | null {
+    if (!this.projectRepository) {
+      return null;
+    }
+
+    if (interaction.isChatInputCommand()) {
+      try {
+        const projectOpt = interaction.options.getString('project');
+        if (projectOpt) {
+          const project = this.projectRepository.getProjectById(projectOpt);
+          if (project) return project;
+        }
+      } catch {
+        // Ignored
+      }
+    }
+
+    const guildId = interaction.guildId;
+    const channelId = interaction.channelId;
+
+    if (guildId && channelId) {
+      const channelProject = this.projectRepository.getProjectForChannel(guildId, channelId);
+      if (channelProject) return channelProject;
+    }
+
+    if (guildId) {
+      const defaultProject = this.projectRepository.getDefaultProjectForGuild(guildId);
+      if (defaultProject) return defaultProject;
+
+      const allGuildProjects = this.projectRepository.getProjectsForGuild(guildId);
+      if (allGuildProjects.length > 0 && allGuildProjects[0]) return allGuildProjects[0];
+    }
+
+    return null;
+  }
+
+  private getGitHubService(project?: ProjectRecord | null): IGitHubService {
+    if (this.gitHubServiceFactory && project) {
+      return this.gitHubServiceFactory.getServiceForProject(project);
+    }
+    return this.gitHubService;
   }
 
   /**

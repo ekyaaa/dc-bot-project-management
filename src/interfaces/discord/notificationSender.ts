@@ -4,6 +4,7 @@ import type {
   DiscordNotificationPayload,
 } from '../../application/ports/IDiscordNotificationSender.js';
 import type { Config } from '../../config/env.js';
+import type { ProjectRepository } from '../../infrastructure/persistence/repositories/ProjectRepository.js';
 import {
   UnauthorizedError,
   NotFoundError,
@@ -16,11 +17,15 @@ export class DiscordNotificationSender implements IDiscordNotificationSender {
   constructor(
     private readonly client: Client,
     private readonly config: Pick<Config, 'DISCORD_NOTIFICATION_CHANNEL_ID' | 'DISCORD_GUILD_ID'>,
+    private readonly projectRepository?: ProjectRepository,
   ) {}
 
   public async sendNotification(payload: DiscordNotificationPayload): Promise<{ messageId: string }> {
-    // 1. Enforce Channel Allowlist
-    if (payload.channelId !== this.config.DISCORD_NOTIFICATION_CHANNEL_ID) {
+    // 1. Enforce Channel Allowlist (default config or any guild permission channel in ProjectRepository)
+    const isChannelAllowed = payload.channelId === this.config.DISCORD_NOTIFICATION_CHANNEL_ID ||
+      (this.projectRepository && this.projectRepository.getAllGuildPermissions().some((p) => p.notification_channel_id === payload.channelId));
+
+    if (!isChannelAllowed) {
       throw new UnauthorizedError(
         `Security violation: Target channel '${payload.channelId}' does not match allowed notification channel '${this.config.DISCORD_NOTIFICATION_CHANNEL_ID}'.`,
       );
@@ -30,9 +35,13 @@ export class DiscordNotificationSender implements IDiscordNotificationSender {
     const channel = await this.resolveChannel(payload.channelId);
 
     // 3. Verify Guild Allowlist
-    if ('guildId' in channel && channel.guildId && channel.guildId !== this.config.DISCORD_GUILD_ID) {
+    const isGuildAllowed = !('guildId' in channel) || !channel.guildId ||
+      channel.guildId === this.config.DISCORD_GUILD_ID ||
+      (this.projectRepository && this.projectRepository.getProjectsForGuild(channel.guildId).length > 0);
+
+    if (!isGuildAllowed) {
       throw new UnauthorizedError(
-        `Security violation: Notification channel '${payload.channelId}' belongs to guild '${channel.guildId}', expected '${this.config.DISCORD_GUILD_ID}'.`,
+        `Security violation: Notification channel '${payload.channelId}' belongs to guild '${channel.guildId}', expected an authorized guild.`,
       );
     }
 
@@ -70,12 +79,19 @@ export class DiscordNotificationSender implements IDiscordNotificationSender {
   }
 
   public async verifyChannel(channelId: string): Promise<boolean> {
-    if (channelId !== this.config.DISCORD_NOTIFICATION_CHANNEL_ID) {
+    const isChannelAllowed = channelId === this.config.DISCORD_NOTIFICATION_CHANNEL_ID ||
+      (this.projectRepository && this.projectRepository.getAllGuildPermissions().some((p) => p.notification_channel_id === channelId));
+
+    if (!isChannelAllowed) {
       return false;
     }
     try {
       const channel = await this.resolveChannel(channelId);
-      if ('guildId' in channel && channel.guildId && channel.guildId !== this.config.DISCORD_GUILD_ID) {
+      const isGuildAllowed = !('guildId' in channel) || !channel.guildId ||
+        channel.guildId === this.config.DISCORD_GUILD_ID ||
+        (this.projectRepository && this.projectRepository.getProjectsForGuild(channel.guildId).length > 0);
+
+      if (!isGuildAllowed) {
         return false;
       }
       return channel.isTextBased() && 'send' in channel;

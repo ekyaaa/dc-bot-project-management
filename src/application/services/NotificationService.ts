@@ -8,6 +8,7 @@ import {
   buildCiFailureWebhookEmbed,
 } from '../../interfaces/discord/embeds.js';
 import type { DispatchDailyDigestUseCase } from '../usecases/DispatchDailyDigestUseCase.js';
+import type { ProjectRepository } from '../../infrastructure/persistence/repositories/ProjectRepository.js';
 
 export interface NotificationWorkerOptions {
   batchSize?: number;
@@ -34,6 +35,7 @@ export class NotificationService {
   >;
   private readonly options: Required<NotificationWorkerOptions>;
   private readonly dispatchDailyDigestUseCase?: DispatchDailyDigestUseCase;
+  private readonly projectRepository?: ProjectRepository;
 
   private pollTimer: NodeJS.Timeout | null = null;
   private isProcessing = false;
@@ -49,6 +51,7 @@ export class NotificationService {
     >,
     options: NotificationWorkerOptions = {},
     dispatchDailyDigestUseCase?: DispatchDailyDigestUseCase,
+    projectRepository?: ProjectRepository,
   ) {
     this.outboxRepository = outboxRepository;
     this.identityRepository = identityRepository;
@@ -62,6 +65,7 @@ export class NotificationService {
       maxBackoffMs: options.maxBackoffMs ?? 60000,
     };
     this.dispatchDailyDigestUseCase = dispatchDailyDigestUseCase;
+    this.projectRepository = projectRepository;
   }
 
   public async ingestWebhook(deliveryId: string, eventType: string, rawPayload: string): Promise<void> {
@@ -162,12 +166,26 @@ export class NotificationService {
     const decision = await this.routeEvent(record.eventType, payload);
 
     if (decision.shouldSend && decision.embeds && decision.embeds.length > 0) {
-      await this.discordSender.sendNotification({
-        channelId: this.config.DISCORD_NOTIFICATION_CHANNEL_ID,
-        content: decision.content,
-        embeds: decision.embeds,
-        allowedMentions: decision.allowedMentions ?? MentionPolicy.buildSafeAllowedMentions([]),
-      });
+      const repoOwner = payload?.repository?.owner?.login || this.config.GITHUB_OWNER;
+      const repoName = payload?.repository?.name || this.config.GITHUB_REPOSITORY;
+
+      const targets = this.projectRepository?.getNotificationTargetsForRepo(repoOwner, repoName) || [];
+      const validChannels = targets
+        .map((t) => t.notification_channel_id)
+        .filter((c): c is string => Boolean(c));
+
+      const targetChannels = validChannels.length > 0
+        ? Array.from(new Set(validChannels))
+        : [this.config.DISCORD_NOTIFICATION_CHANNEL_ID];
+
+      for (const channelId of targetChannels) {
+        await this.discordSender.sendNotification({
+          channelId,
+          content: decision.content,
+          embeds: decision.embeds,
+          allowedMentions: decision.allowedMentions ?? MentionPolicy.buildSafeAllowedMentions([]),
+        });
+      }
     }
   }
 

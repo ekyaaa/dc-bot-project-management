@@ -149,6 +149,11 @@ export const EnvSchema = z.object({
   BOT_WRITE_ACTIONS_ENABLED: z
     .union([z.boolean(), z.string().transform((v) => v === 'true')])
     .default(false),
+
+  // Web Admin Authentication (Optional overrides)
+  ADMIN_USERNAME: z.string().default('mashupsoat'),
+  ADMIN_PASSWORD_HASH: z.string().optional(),
+  ADMIN_SESSION_SECRET: z.string().optional(),
 });
 
 export type Config = z.infer<typeof EnvSchema>;

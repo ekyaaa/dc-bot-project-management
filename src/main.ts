@@ -8,6 +8,7 @@ import {
   OutboxRepository,
   AuditRepository,
   ScheduleRepository,
+  ProjectRepository,
 } from './infrastructure/persistence/repositories/index.js';
 import { CryptoService } from './infrastructure/crypto/crypto.js';
 import { AuditService } from './application/services/AuditService.js';
@@ -15,10 +16,12 @@ import { AuthorizationService } from './application/services/AuthorizationServic
 import { NotificationService } from './application/services/NotificationService.js';
 import { GitHubAppAuth } from './infrastructure/github/GitHubAppAuth.js';
 import { GitHubService } from './infrastructure/github/GitHubService.js';
+import { GitHubServiceFactory } from './infrastructure/github/GitHubServiceFactory.js';
 import { GitHubOAuthClient } from './infrastructure/github/GitHubOAuthClient.js';
 import { DiscordGatewayClient } from './interfaces/discord/client.js';
 import { DiscordNotificationSender } from './interfaces/discord/notificationSender.js';
 import { InteractionRouter } from './interfaces/discord/interactionRouter.js';
+import { registerGuildSlashCommands } from './interfaces/discord/commands/registry.js';
 import {
   InitiateAccountLinkUseCase,
   GetAccountStatusUseCase,
@@ -45,6 +48,7 @@ export async function bootstrap() {
   const outboxRepo = new OutboxRepository(dbManager.db);
   const auditRepo = new AuditRepository(dbManager.db);
   const scheduleRepo = new ScheduleRepository(dbManager.db);
+  const projectRepo = new ProjectRepository(dbManager.db);
 
   // Security & Crypto Services
   const cryptoService = new CryptoService(config.TOKEN_ENCRYPTION_KEY);
@@ -56,23 +60,28 @@ export async function bootstrap() {
     config,
     gitHubAppAuth: gitHubAuth,
   });
+  const gitHubServiceFactory = new GitHubServiceFactory({
+    gitHubAppAuth: gitHubAuth,
+    defaultService: gitHubService,
+  });
   const gitHubOAuthClient = new GitHubOAuthClient();
 
   // Authorization Policy Service
-  const authService = new AuthorizationService(identityRepo, gitHubService, config);
+  const authService = new AuthorizationService(identityRepo, gitHubService, config, projectRepo);
 
   // Discord Gateway & Notification Sender
   const discordGateway = new DiscordGatewayClient({ config });
-  const discordSender = new DiscordNotificationSender(discordGateway.rawClient, config);
+  const discordSender = new DiscordNotificationSender(discordGateway.rawClient, config, projectRepo);
 
   // Use Cases
   const initiateAccountLinkUseCase = new InitiateAccountLinkUseCase(
     oauthStateRepo,
     cryptoService,
     config,
+    projectRepo,
   );
-  const getAccountStatusUseCase = new GetAccountStatusUseCase(identityRepo, config);
-  const disconnectAccountUseCase = new DisconnectAccountUseCase(identityRepo, auditRepo, config);
+  const getAccountStatusUseCase = new GetAccountStatusUseCase(identityRepo, config, projectRepo);
+  const disconnectAccountUseCase = new DisconnectAccountUseCase(identityRepo, auditRepo, config, projectRepo);
   const handleOAuthCallbackUseCase = new HandleOAuthCallbackUseCase(
     oauthStateRepo,
     identityRepo,
@@ -87,14 +96,18 @@ export async function bootstrap() {
     scheduleRepo,
     discordSender,
     config,
+    projectRepo,
+    gitHubServiceFactory,
   );
 
   // Discord Interaction Router
   const interactionRouter = new InteractionRouter({
     config,
     gitHubService,
+    gitHubServiceFactory,
     authService,
     auditService,
+    projectRepository: projectRepo,
     accountUseCases: {
       initiateAccountLinkUseCase,
       getAccountStatusUseCase,
@@ -123,6 +136,7 @@ export async function bootstrap() {
     config,
     {},
     dispatchDailyDigestUseCase,
+    projectRepo,
   );
   notificationService.startWorker();
 
@@ -133,6 +147,10 @@ export async function bootstrap() {
     cryptoService,
     authRouteOptions: {
       handleOAuthCallbackUseCase,
+    },
+    adminRouteOptions: {
+      config,
+      projectRepository: projectRepo,
     },
     webhookRouteOptions: {
       cryptoService,
@@ -152,6 +170,27 @@ export async function bootstrap() {
   // Connect to Discord Gateway
   await discordGateway.start();
   console.log('[Main] Discord Gateway client logged in successfully.');
+
+  // Register Guild Slash Commands for all permitted guilds
+  const permittedGuilds = Array.from(
+    new Set([
+      config.DISCORD_GUILD_ID,
+      ...projectRepo.getAllGuildPermissions().map((p) => p.guild_id),
+    ]),
+  );
+
+  for (const guildId of permittedGuilds) {
+    try {
+      const { registeredCount } = await registerGuildSlashCommands({
+        DISCORD_APPLICATION_ID: config.DISCORD_APPLICATION_ID,
+        DISCORD_GUILD_ID: guildId,
+        DISCORD_BOT_TOKEN: config.DISCORD_BOT_TOKEN,
+      });
+      console.log(`[Main] Successfully registered ${registeredCount} slash commands to guild ${guildId}.`);
+    } catch (err) {
+      console.error(`[Main] Failed to register slash commands to guild ${guildId}:`, err);
+    }
+  }
 
   // Graceful Shutdown Registration
   let isShuttingDown = false;

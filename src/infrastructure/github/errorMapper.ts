@@ -38,15 +38,43 @@ export function mapGitHubError(error: unknown, context?: string): Error {
     const rawErrors = (error as { errors: GraphQLErrorItem[] }).errors;
     const messages = rawErrors.map((e) => e.message ?? '').join('; ');
 
-    if (
+    const isProjectV2PermissionError =
       messages.includes('Resource not accessible by integration') ||
       messages.includes('Viewer does not have permission') ||
       messages.includes('You must have write permissions') ||
       messages.includes("Field 'projectV2' doesn't exist") ||
-      messages.includes('Could not resolve to a ProjectV2')
-    ) {
+      messages.includes('Could not resolve to a ProjectV2');
+
+    if (isProjectV2PermissionError) {
       return new PendingPermissionError(
         `GitHub App lacks required permissions for GitHub Projects v2: ${messages}`,
+        { context, rawErrors },
+      );
+    }
+
+    if (messages.includes('Resource protected by organization SAML enforcement')) {
+      return new PendingPermissionError(
+        `Organisasi memerlukan otorisasi SAML/SSO untuk GitHub App: ${messages}`,
+        { context, rawErrors },
+      );
+    }
+
+    if (
+      rawErrors.some((e) => e.type === 'NOT_FOUND') ||
+      messages.toLowerCase().includes('could not resolve to a') ||
+      messages.toLowerCase().includes('could not resolve to an')
+    ) {
+      return new NotFoundError(`GitHub resource not found: ${messages}`, { context, rawErrors });
+    }
+
+    if (
+      rawErrors.some((e) => e.type === 'RATE_LIMITED') ||
+      messages.toLowerCase().includes('rate limit') ||
+      messages.toLowerCase().includes('secondary rate limit')
+    ) {
+      return new RateLimitError(
+        `GitHub API rate limit exceeded. Silakan tunggu beberapa saat.`,
+        60,
         { context, rawErrors },
       );
     }
@@ -126,6 +154,18 @@ export function mapGitHubError(error: unknown, context?: string): Error {
   }
 
   if (error instanceof Error) {
+    if (
+      error.message.includes('ECONNRESET') ||
+      error.message.includes('ETIMEDOUT') ||
+      error.message.includes('ENOTFOUND') ||
+      error.message.includes('fetch failed')
+    ) {
+      return new ExternalApiError(
+        `Koneksi ke GitHub API terputus atau timeout: ${error.message}`,
+        504,
+        { context },
+      );
+    }
     return new ExternalApiError(`GitHub integration error: ${error.message}`, 500, { context });
   }
 

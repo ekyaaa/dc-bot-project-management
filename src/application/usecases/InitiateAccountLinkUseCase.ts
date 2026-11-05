@@ -1,6 +1,7 @@
 import type { Config } from '../../config/env.js';
 import type { ICryptoService } from '../ports/ICryptoService.js';
 import type { IOAuthStateRepository } from '../ports/IRepositories.js';
+import type { ProjectRepository } from '../../infrastructure/persistence/repositories/ProjectRepository.js';
 import { UnauthorizedError } from '../../domain/errors.js';
 
 export interface InitiateAccountLinkInput {
@@ -19,11 +20,15 @@ export class InitiateAccountLinkUseCase {
     private readonly oauthStateRepository: IOAuthStateRepository,
     private readonly cryptoService: ICryptoService,
     private readonly config: Pick<Config, 'DISCORD_GUILD_ID' | 'GITHUB_APP_CLIENT_ID' | 'PUBLIC_BASE_URL'>,
+    private readonly projectRepository?: ProjectRepository,
   ) {}
 
   public async execute(input: InitiateAccountLinkInput): Promise<InitiateAccountLinkResult> {
-    // Fail-closed guild allowlist check
-    if (input.guildId !== this.config.DISCORD_GUILD_ID) {
+    // Fail-closed guild allowlist check: allows config guild or any guild configured in ProjectRepository
+    const isAllowed = input.guildId === this.config.DISCORD_GUILD_ID ||
+      (this.projectRepository && this.projectRepository.getProjectsForGuild(input.guildId).length > 0);
+
+    if (!isAllowed) {
       throw new UnauthorizedError('Account linking is not permitted in this Discord server.');
     }
 

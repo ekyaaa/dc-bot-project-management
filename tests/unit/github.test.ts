@@ -53,6 +53,15 @@ describe('GitHub Integration & Error Mapping', () => {
       expect(result).toBeInstanceOf(PendingPermissionError);
     });
 
+    it('maps GraphQL NOT_FOUND errors to NotFoundError', () => {
+      const gqlError = {
+        errors: [{ type: 'NOT_FOUND', message: 'Could not resolve to an Issue with the number of 1.' }],
+      };
+      const result = mapGitHubError(gqlError);
+      expect(result).toBeInstanceOf(NotFoundError);
+      expect(result.message).toContain('GitHub resource not found');
+    });
+
     it('maps other GraphQL errors to ExternalApiError', () => {
       const gqlError = {
         errors: [{ message: 'Syntax error in query' }],

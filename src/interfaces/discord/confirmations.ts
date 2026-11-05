@@ -18,6 +18,7 @@ export interface PendingConfirmationSession {
   callerDiscordId: string;
   timestamp: number;
   expiresAt: number; // timestamp + 60_000
+  projectId?: string;
   payload: {
     targetAssignee?: string;
     expectedPreviousAssignees?: string[];
@@ -252,6 +253,8 @@ export async function handleConfirmationInteraction(
   const principal = await deps.authService.resolvePrincipal(
     interaction.user.id,
     interaction.guildId ?? '',
+    interaction.channelId ?? undefined,
+    deps.gitHubService,
   );
   deps.authService.requireVerifiedIdentity(principal);
 

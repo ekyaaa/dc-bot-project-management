@@ -1,6 +1,7 @@
 import type { IAuthorizationService, AuthorizationDecision } from '../ports/IAuthorizationService.js';
 import type { IIdentityRepository } from '../ports/IRepositories.js';
 import type { IGitHubService } from '../ports/IGitHubService.js';
+import type { ProjectRepository } from '../../infrastructure/persistence/repositories/ProjectRepository.js';
 import type { Config } from '../../config/env.js';
 import {
   AuthorizationPolicy,
@@ -45,6 +46,7 @@ export class AuthorizationService implements IAuthorizationService {
       Config,
       'DISCORD_GUILD_ID' | 'DISCORD_NOTIFICATION_CHANNEL_ID' | 'BOT_WRITE_ACTIONS_ENABLED'
     >,
+    private readonly projectRepository?: ProjectRepository,
   ) {
     this.policyOptions = {
       allowedGuildId: config.DISCORD_GUILD_ID,
@@ -52,10 +54,17 @@ export class AuthorizationService implements IAuthorizationService {
     };
   }
 
+  private isGuildAllowed(guildId: string): boolean {
+    if (guildId === this.config.DISCORD_GUILD_ID) return true;
+    if (this.projectRepository && this.projectRepository.getProjectsForGuild(guildId).length > 0) return true;
+    return false;
+  }
+
   public async resolvePrincipal(
     discordUserId: string,
     guildId: string,
     channelId?: string,
+    overrideGitHubService?: IGitHubService,
   ): Promise<Principal> {
     const record = await this.identityRepo.findByDiscordId(discordUserId);
 
@@ -68,9 +77,10 @@ export class AuthorizationService implements IAuthorizationService {
       };
     }
 
+    const activeGitHub = overrideGitHubService ?? this.githubService;
     let repoPermission: RepoPermissionLevel = 'none';
     try {
-      repoPermission = await this.githubService.getUserRepoPermission(record.githubUsername);
+      repoPermission = await activeGitHub.getUserRepoPermission(record.githubUsername);
     } catch {
       // If collaborator not found or API fails, fail-closed to 'none'
       repoPermission = 'none';
@@ -104,8 +114,11 @@ export class AuthorizationService implements IAuthorizationService {
   }
 
   public authorizeRead(principal: Principal, action: ReadAction): AuthorizationDecision {
+    if (!this.isGuildAllowed(principal.guildId)) {
+      return { allowed: false, reason: 'Command is not permitted in this Discord server.' };
+    }
     return AuthorizationPolicy.canExecuteRead(principal, action, {
-      allowedGuildId: this.config.DISCORD_GUILD_ID,
+      allowedGuildId: principal.guildId,
     });
   }
 
@@ -121,7 +134,7 @@ export class AuthorizationService implements IAuthorizationService {
       };
     }
 
-    if (principal.guildId !== this.config.DISCORD_GUILD_ID) {
+    if (!this.isGuildAllowed(principal.guildId)) {
       return {
         allowed: false,
         reason: 'Write commands are not permitted in this Discord server.',
